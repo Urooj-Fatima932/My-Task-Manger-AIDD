@@ -1,0 +1,18 @@
+[project]
+name = "my-task-manager"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "questionary>=2.1.1",
+    "rich>=14.2.0",
+    "streamlit>=1.36.0",
+    "pandas>=2.2.2",
+    "bcrypt>=4.1.2",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["features*", "streamlit_app*"]
+
