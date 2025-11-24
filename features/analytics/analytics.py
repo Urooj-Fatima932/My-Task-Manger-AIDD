@@ -37,6 +37,52 @@ def get_productivity_analytics():
         "tasks_by_category": tasks_by_category,
     }
 
+def get_advanced_analytics():
+    """
+    This function retrieves advanced analytics data based on time tracking.
+    """
+    all_tasks = tasks.get_all_tasks()
+    if not all_tasks:
+        return None
+
+    time_by_category = {}
+    time_by_priority = {}
+    tasks_completed_by_day = {i: 0 for i in range(7)} # 0: Monday, 6: Sunday
+    tasks_completed_by_hour = {i: 0 for i in range(24)}
+
+    for task in all_tasks:
+        total_seconds = 0
+        for entry in task.get("time_entries", []):
+            if entry["end_time"]:
+                start = datetime.fromisoformat(entry["start_time"])
+                end = datetime.fromisoformat(entry["end_time"])
+                total_seconds += (end - start).total_seconds()
+        
+        if total_seconds > 0:
+            category = task.get('category', 'Unknown')
+            priority = task.get('priority', 'Unknown')
+            time_by_category[category] = time_by_category.get(category, 0) + total_seconds
+            time_by_priority[priority] = time_by_priority.get(priority, 0) + total_seconds
+
+        if task['status'] == 'Completed' and task.get("time_entries"):
+            # For simplicity, we consider the end time of the last time entry as completion time
+            last_entry = task["time_entries"][-1]
+            if last_entry["end_time"]:
+                completion_time = datetime.fromisoformat(last_entry["end_time"])
+                tasks_completed_by_day[completion_time.weekday()] += 1
+                tasks_completed_by_hour[completion_time.hour] += 1
+    
+    # Convert seconds to hours for readability
+    time_by_category_hours = {k: v / 3600 for k, v in time_by_category.items()}
+    time_by_priority_hours = {k: v / 3600 for k, v in time_by_priority.items()}
+
+    return {
+        "time_by_category": time_by_category_hours,
+        "time_by_priority": time_by_priority_hours,
+        "tasks_completed_by_day": tasks_completed_by_day,
+        "tasks_completed_by_hour": tasks_completed_by_hour,
+    }
+
 def display_productivity_analytics():
     """
     This function displays productivity analytics.

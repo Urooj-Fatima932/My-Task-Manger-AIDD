@@ -2,15 +2,19 @@ import questionary
 from rich.console import Console
 from rich.table import Table
 import json
-from datetime import datetime
-from features.categories.categories import get_all_categories, create_category
+from datetime import datetime, timedelta
 
 console = Console()
 DATABASE_FILE = "database/tasks.txt"
 
+def _get_next_id(tasks):
+    if not tasks:
+        return 1
+    return max(task["id"] for task in tasks) + 1
+
 def get_all_tasks():
     """
-    This function retrieves all tasks from the database file.
+    This function retrieves all tasks from the database file and generates recurring tasks.
     
     Returns:
         A list of task dictionaries.
@@ -18,9 +22,43 @@ def get_all_tasks():
     try:
         with open(DATABASE_FILE, "r") as f:
             tasks = [json.loads(line) for line in f]
-        return tasks
     except FileNotFoundError:
-        return []
+        tasks = []
+
+    newly_generated_tasks = []
+    today = datetime.now().date()
+    
+    # Use a copy of tasks to avoid modifying the list while iterating
+    for task in list(tasks):
+        if task.get("is_recurring"):
+            last_recurred = datetime.strptime(task["last_recurred_at"], "%Y-%m-%d").date()
+            should_recur = False
+            
+            if task["recurrence_rule"] == "daily" and last_recurred < today:
+                should_recur = True
+            elif task["recurrence_rule"] == "weekly" and last_recurred <= today - timedelta(weeks=1):
+                should_recur = True
+            elif task["recurrence_rule"] == "monthly" and last_recurred.month < today.month:
+                should_recur = True
+
+            if should_recur:
+                new_task = task.copy()
+                new_task["id"] = _get_next_id(tasks + newly_generated_tasks)
+                new_task["is_recurring"] = False
+                new_task["recurrence_rule"] = None
+                new_task["last_recurred_at"] = None
+                new_task["created_at"] = today.strftime("%Y-%m-%d")
+                new_task["status"] = "Pending"
+                newly_generated_tasks.append(new_task)
+                
+                # Update the last recurred date of the template task
+                task["last_recurred_at"] = today.strftime("%Y-%m-%d")
+
+    if newly_generated_tasks:
+        tasks.extend(newly_generated_tasks)
+        save_tasks(tasks)
+
+    return tasks
 
 def save_tasks(tasks):
     """
@@ -33,13 +71,13 @@ def save_tasks(tasks):
         for task in tasks:
             f.write(json.dumps(task) + "\n")
 
-def add_task_data(title, description, category, priority, deadline, tags):
+def add_task_data(title, description, category, priority, deadline, tags, is_recurring=False, recurrence_rule=None):
     """
     This function adds a new task to the database.
     """
     tasks = get_all_tasks()
     new_task = {
-        "id": len(tasks) + 1,
+        "id": _get_next_id(tasks),
         "title": title,
         "description": description,
         "category": category,
@@ -48,10 +86,120 @@ def add_task_data(title, description, category, priority, deadline, tags):
         "created_at": datetime.now().strftime("%Y-%m-%d"),
         "deadline": deadline.strftime("%Y-%m-%d") if deadline else None,
         "tags": tags,
+        "is_recurring": is_recurring,
+        "recurrence_rule": recurrence_rule,
+        "last_recurred_at": datetime.now().strftime("%Y-%m-%d") if is_recurring else None,
+        "time_entries": [],
+        "is_tracking": False,
     }
     tasks.append(new_task)
     save_tasks(tasks)
     return new_task
+
+def edit_task_data(task_id, title, description, category, priority, deadline, status, tags, is_recurring=False, recurrence_rule=None):
+    """
+    This function edits an existing task's data.
+    """
+    tasks = get_all_tasks()
+    task_to_edit = None
+    for task in tasks:
+        if task["id"] == task_id:
+            task_to_edit = task
+            break
+    
+    if not task_to_edit:
+        return None
+
+    task_to_edit["title"] = title
+    task_to_edit["description"] = description
+    task_to_edit["category"] = category
+    task_to_edit["priority"] = priority
+    if isinstance(deadline, str):
+        task_to_edit["deadline"] = deadline
+    else:
+        task_to_edit["deadline"] = deadline.strftime("%Y-%m-%d") if deadline else None
+    task_to_edit["status"] = status
+    task_to_edit["tags"] = tags
+    task_to_edit["is_recurring"] = is_recurring
+    task_to_edit["recurrence_rule"] = recurrence_rule
+    if is_recurring and not task_to_edit.get("last_recurred_at"):
+        task_to_edit["last_recurred_at"] = datetime.now().strftime("%Y-%m-%d")
+
+    save_tasks(tasks)
+    return task_to_edit
+
+def delete_task_data(task_id):
+    """
+    This function deletes a task by its ID.
+    """
+    tasks = get_all_tasks()
+    task_to_delete = None
+    for task in tasks:
+        if task["id"] == task_id:
+            task_to_delete = task
+            break
+    
+    if not task_to_delete:
+        return False
+    
+    tasks.remove(task_to_delete)
+    save_tasks(tasks)
+    return True
+
+def get_task_by_id(task_id):
+    """
+    This function retrieves a task by its ID.
+    """
+    tasks = get_all_tasks()
+    for task in tasks:
+        if task["id"] == task_id:
+            return task
+    return None
+
+def start_time_tracking(task_id):
+    """
+    This function starts time tracking for a task.
+    """
+    task = get_task_by_id(task_id)
+    if not task:
+        return False
+    
+    if task.get("is_tracking", False):
+        return False # Already tracking
+
+    task["is_tracking"] = True
+    task.setdefault("time_entries", []).append({
+        "start_time": datetime.now().isoformat(),
+        "end_time": None
+    })
+    
+    tasks = get_all_tasks()
+    for i, t in enumerate(tasks):
+        if t["id"] == task_id:
+            tasks[i] = task
+            break
+    save_tasks(tasks)
+    return True
+
+def stop_time_tracking(task_id):
+    """
+    This function stops time tracking for a task.
+    """
+    task = get_task_by_id(task_id)
+    if not task or not task.get("is_tracking", False):
+        return False
+
+    task["is_tracking"] = False
+    if task["time_entries"]:
+        task["time_entries"][-1]["end_time"] = datetime.now().isoformat()
+    
+    tasks = get_all_tasks()
+    for i, t in enumerate(tasks):
+        if t["id"] == task_id:
+            tasks[i] = task
+            break
+    save_tasks(tasks)
+    return True
 
 def add_task():
     """
@@ -64,6 +212,8 @@ def add_task():
 
     description = questionary.text("What is the description of the task?").ask()
     
+    from features.categories.categories import get_all_categories, create_category
+
     categories = get_all_categories()
     category_choices = [cat['name'] for cat in categories]
     category_choices.append("None")
@@ -103,7 +253,15 @@ def add_task():
     tags_str = questionary.text("Enter tags for the task (comma-separated, leave empty to skip):").ask()
     tags = [tag.strip() for tag in tags_str.split(',') if tag.strip()] if tags_str else []
 
-    add_task_data(title, description, category, priority, deadline, tags)
+    is_recurring = questionary.confirm("Is this a recurring task?").ask()
+    recurrence_rule = None
+    if is_recurring:
+        recurrence_rule = questionary.select(
+            "Select recurrence rule:",
+            choices=["daily", "weekly", "monthly"]
+        ).ask()
+
+    add_task_data(title, description, category, priority, deadline, tags, is_recurring, recurrence_rule)
     console.print(f"[bold green]Task '{title}' added successfully![/bold green]")
 
 def list_tasks():
@@ -136,30 +294,6 @@ def list_tasks():
 
     console.print(table)
 
-def edit_task_data(task_id, title, description, category, priority, deadline, status, tags):
-    """
-    This function edits an existing task's data.
-    """
-    tasks = get_all_tasks()
-    task_to_edit = None
-    for task in tasks:
-        if task["id"] == task_id:
-            task_to_edit = task
-            break
-    
-    if not task_to_edit:
-        return None
-
-    task_to_edit["title"] = title
-    task_to_edit["description"] = description
-    task_to_edit["category"] = category
-    task_to_edit["priority"] = priority
-    task_to_edit["deadline"] = deadline.strftime("%Y-%m-%d") if deadline else None
-    task_to_edit["status"] = status
-    task_to_edit["tags"] = tags
-    save_tasks(tasks)
-    return task_to_edit
-
 def edit_task():
     """
     This function edits an existing task.
@@ -190,6 +324,8 @@ def edit_task():
     title = questionary.text(f"What is the new title for the task (current: {task_to_edit['title']})?", default=task_to_edit['title']).ask()
     description = questionary.text(f"What is the new description for the task (current: {task_to_edit['description']})?", default=task_to_edit['description']).ask()
     
+    from features.categories.categories import get_all_categories, create_category
+
     categories = get_all_categories()
     category_choices = [cat['name'] for cat in categories]
     category_choices.append("None")
@@ -222,12 +358,20 @@ def edit_task():
     deadline_str = questionary.text(f"What is the new deadline for the task (YYYY-MM-DD) (current: {task_to_edit['deadline']})?", default=task_to_edit['deadline'] if task_to_edit['deadline'] else "").ask()
     status = questionary.select(
         f"What is the new status for the task (current: {task_to_edit['status']})?",
-        choices=["Pending", "Completed"],
+        choices=["Pending", "In Progress", "Completed"],
         default=task_to_edit['status']
     ).ask()
 
-    tags_str = questionary.text(f"Enter new tags for the task (comma-separated, current: {', '.join(task_to_edit['tags'])}):", default=', '.join(task_to_edit['tags'])).ask()
+    tags_str = questionary.text(f"Enter new tags for the task (comma-separated, current: {', '.join(task_to_edit['tags'])}):").ask(default=', '.join(task_to_edit['tags']))
     tags = [tag.strip() for tag in tags_str.split(',') if tag.strip()] if tags_str else []
+    
+    is_recurring = questionary.confirm("Is this a recurring task?").ask()
+    recurrence_rule = None
+    if is_recurring:
+        recurrence_rule = questionary.select(
+            "Select recurrence rule:",
+            choices=["daily", "weekly", "monthly"]
+        ).ask()
 
     deadline = None
     if deadline_str:
@@ -237,26 +381,8 @@ def edit_task():
             console.print("[bold red]Invalid date format. Please use YYYY-MM-DD.[/bold red]")
             return
     
-    edit_task_data(task_id, title, description, category, priority, deadline, status, tags)
+    edit_task_data(task_id, title, description, category, priority, deadline, status, tags, is_recurring, recurrence_rule)
     console.print(f"[bold green]Task '{title}' updated successfully![/bold green]")
-
-def delete_task_data(task_id):
-    """
-    This function deletes a task by its ID.
-    """
-    tasks = get_all_tasks()
-    task_to_delete = None
-    for task in tasks:
-        if task["id"] == task_id:
-            task_to_delete = task
-            break
-    
-    if not task_to_delete:
-        return False
-    
-    tasks.remove(task_to_delete)
-    save_tasks(tasks)
-    return True
 
 def delete_task():
     """
@@ -322,7 +448,7 @@ def search_and_filter_tasks():
 
     filter_status = questionary.select(
         "Filter by status (leave empty to skip):",
-        choices=["Pending", "Completed", "Skip"],
+        choices=["Pending", "In Progress", "Completed", "Skip"],
         default="Skip"
     ).ask()
     if filter_status != "Skip":
@@ -336,7 +462,6 @@ def search_and_filter_tasks():
         console.print("[bold yellow]No tasks found matching your criteria.[/bold yellow]")
         return
 
-    # Display filtered tasks using a temporary list_tasks-like function
     table = Table(title="Filtered Tasks")
     table.add_column("ID", style="cyan")
     table.add_column("Title", style="magenta")
